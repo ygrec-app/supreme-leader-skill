@@ -1,0 +1,23 @@
+{
+  "skill_name": "supreme-leader",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I need to build a small Node.js project with 3 parts: a utility library with string helpers, an Express API that uses those helpers, and unit tests for both. Split this across multiple agents and manage them for me.",
+      "expected_output": "Supreme leader should decompose into 3 tasks (utils, API, tests), identify that tests depend on the other two, spawn 2 workers immediately for utils and API, then spawn the test worker once both are verified. All deliverables should be reviewed and verified autonomously.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "I have 4 independent refactoring tasks: rename all snake_case variables to camelCase in src/auth.js, src/users.js, src/billing.js, and src/notifications.js. Use your team to do them all in parallel.",
+      "expected_output": "Supreme leader should create 4 workers (one per file), all independent with no dependencies. Should spawn all 4 simultaneously, review each refactored file, verify naming conventions are correct, and complete once all are done.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Orchestrate a team to build a simple todo app: one worker does the data model and persistence layer, another builds the CLI interface, and a third writes the README. The CLI depends on the data model being done first.",
+      "expected_output": "Supreme leader should spawn data model and README workers immediately (independent), hold the CLI worker until data model is verified (dependency), then spawn CLI. Should review all three deliverables and handle any needed fixes via dispatch, never coding itself.",
+      "files": []
+    }
+  ]
+}
