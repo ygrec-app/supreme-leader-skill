@@ -49,6 +49,67 @@ Or describe what you want naturally:
 **With dependencies:**
 > "Build a todo app: one worker does the data model, another the CLI (depends on data model), and a third writes docs."
 
+## Architecture
+
+### Project Structure
+
+When the skill runs, it creates this structure in your project directory:
+
+```
+<project>/
+├── tasks/
+│   ├── supreme-leader-state.json    # Leader's persisted state (crash recovery)
+│   ├── PROGRESS.md                  # Human-readable progress dashboard
+│   ├── FINAL_REPORT.md              # Post-completion summary
+│   └── worker-<id>.status           # JSON status file per worker
+└── work/
+    └── worker-<id>/                 # One directory per worker (IDs: a, b, c, ...)
+        ├── TASK.md                  # Assignment (generated from template)
+        ├── progress.json            # Checkpoint file for crash recovery
+        ├── team-lead-feedback.txt   # Review feedback (leader → worker)
+        └── team-lead-response.txt   # Answers to questions (leader → worker)
+```
+
+### Phases
+
+**Phase 1: PLAN** — Decomposes the goal into independent subtasks. Detects file conflicts (no two workers may edit the same file — hard rule). Balances workloads (no worker >3x the median). Maps dependencies between tasks. Writes TASK.md files from a template, injecting relevant project conventions from CLAUDE.md. Presents the plan for human approval before proceeding.
+
+**Phase 2: SPAWN** — Renames the leader's cmux workspace (e.g., `"Refactor (lead)"`), creates a separate team workspace (`"Refactor (team)"`). Splits panes into a grid (supports 2-8 workers). Launches `claude --dangerously-skip-permissions` in each pane. Dispatches tasks via `cmux send`. Writes `supreme-leader-state.json` with the full worker-to-surface mapping.
+
+**Phase 3: MONITOR** — Sets up `/loop 1m` for autonomous polling. Each iteration: reads all `.status` files, updates `PROGRESS.md`, and reacts based on worker state:
+
+| Status | Action |
+|--------|--------|
+| `working` | Skip — let them continue |
+| `done` | Review the deliverable. Approve (`verified`) or reject (`needs-fix` + feedback file) |
+| `blocked` | Read the question, write a response, notify worker via cmux |
+| `needs-fix` | Re-check. Escalate to human after 3 rejections |
+| `verified` | No action needed |
+
+Dependent workers are spawned only when their prerequisites reach `verified`. Stuck workers (no status change for 3+ iterations) trigger a human alert.
+
+**Phase 4: COMPLETE** — Writes `FINAL_REPORT.md`, cancels the `/loop` cron job, sends `/exit` to all worker panes, closes the team workspace.
+
+### Communication Protocol
+
+Workers and the leader communicate exclusively through files — no direct messaging. Workers write JSON status files with a defined FSM:
+
+```
+(spawn) → working → done → verified
+                      ↓
+                 needs-fix → done → verified
+
+working → blocked → (response) → working → done
+```
+
+### Crash Recovery
+
+Both the leader and workers persist their state to disk:
+- **Leader:** `tasks/supreme-leader-state.json` — worker mappings, dependency graph, iteration count, timestamps
+- **Workers:** `work/worker-<id>/progress.json` — completed/remaining files for multi-file tasks
+
+On restart, the leader reads its state file, checks cmux for surviving panes, re-establishes the `/loop`, and continues without re-planning or re-spawning running workers.
+
 ## License
 
 MIT
