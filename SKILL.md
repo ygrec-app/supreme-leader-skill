@@ -21,10 +21,66 @@ You don't open an editor.
 ## Prerequisites
 
 Before starting, verify these are available:
-- `cmux` CLI (run `cmux --version` to confirm)
-- The current session is running inside cmux (check for `CMUX_WORKSPACE_ID` env var, or just try `cmux ping`)
+1. `cmux` CLI — run `cmux --version` to confirm
+2. cmux session — check for `CMUX_WORKSPACE_ID` env var, or run `cmux ping`
 
 If cmux is not available, tell the user and stop — this skill requires cmux.
+
+3. **cmux permissions** — read the project's `.claude/settings.local.json` (if it exists) and
+   check if cmux commands like `Bash(cmux list-workspaces)` or `Bash(cmux *)` are in the
+   `permissions.allow` array. If they are, **skip the rest of this section and proceed to
+   Phase 1.** Also skip if the user explicitly told you they're running in bypass mode or
+   with `--dangerously-skip-permissions`.
+
+### If cmux commands are not pre-approved
+
+If the settings file doesn't exist, has no cmux entries, or the user is not in bypass mode,
+they need to configure permissions. The supreme leader issues many cmux commands rapidly — if
+each one requires manual
+approval, orchestration becomes painful (especially `select-workspace` which switches the
+user's visible view away from the approval prompt).
+
+Tell the user to add the **safe subset** to their **project-level local** settings file at
+`.claude/settings.local.json` in the project root where Claude is running (NOT inside a
+subdirectory, and **never** the global `~/.claude/settings.json`). Use `settings.local.json`
+(not `settings.json`) because these are user-specific permissions that shouldn't be committed
+to version control. These are read-only and structural commands that can't cause harm:
+
+```json
+"permissions": {
+  "allow": [
+    "Bash(cmux --version)",
+    "Bash(cmux ping)",
+    "Bash(cmux list-workspaces)",
+    "Bash(cmux list-panes *)",
+    "Bash(cmux list-pane-surfaces *)",
+    "Bash(cmux read-screen *)",
+    "Bash(cmux surface-health *)",
+    "Bash(cmux new-workspace)",
+    "Bash(cmux new-split *)",
+    "Bash(cmux rename-workspace *)",
+    "Bash(cmux select-workspace *)"
+  ]
+}
+```
+
+These commands will still require manual approval (since they can execute arbitrary text in
+worker terminals or destroy state):
+- `cmux send` — types text into terminals
+- `cmux send-key` — presses keys (Enter executes whatever was typed)
+- `cmux close-workspace` — kills all sessions in a workspace
+
+If the user prefers fully autonomous orchestration with no approval prompts, they can instead
+add `Bash(cmux *)` to the project's `.claude/settings.local.json` to allow everything — but
+warn them that this means `cmux send` can type anything into worker terminals without review.
+
+**Never modify `~/.claude/settings.json` (global settings).** cmux permissions should be
+scoped to the project that needs orchestration, not applied globally to all Claude sessions.
+Always use `settings.local.json` (not `settings.json`) for permissions — they're user-specific
+and should not be committed to the repo.
+
+Do not proceed until the user has configured their permissions or explicitly says they're fine
+approving manually.
 
 ## Phase 1: PLAN
 
@@ -85,51 +141,134 @@ When the user gives you a goal:
 
 ## Phase 2: SPAWN
 
+### Key concept: panes vs surfaces
+
+cmux has two distinct concepts — confusing them is the #1 source of errors:
+- **Pane** = a layout container (a split region of the workspace). Not directly addressable for I/O.
+- **Surface** = a terminal session inside a pane. This is what you `send` to and `read-screen` from.
+
+`send`, `send-key`, and `read-screen` all require a **surface ref** (e.g., `surface:42`), NOT a pane ref.
+Using a pane ref will error with "Surface is not a terminal".
+
+### How to get surface refs
+
+There are two ways:
+1. **Capture from `new-split` output.** Every `new-split` prints `OK surface:<N> workspace:<M>`.
+   Parse and save that surface ref immediately. This is the preferred method.
+2. **Use `list-pane-surfaces`** to discover the terminal surface inside a pane:
+   ```bash
+   cmux list-pane-surfaces --workspace <workspace-ref> --pane <pane-ref>
+   # Output: * surface:42  ~/some/path  [selected]
+   ```
+   Use this for the **initial pane** that already exists when you create a workspace —
+   there's no `new-split` output to capture for it.
+
+**Do NOT use `list-panes` to get surface refs** — it only returns pane refs.
+
+### Workspace ref format
+
+`new-workspace` returns a **UUID** (e.g., `3B2BD4FD-...`). However, `read-screen`
+**only works with short workspace refs** (e.g., `workspace:27`), not UUIDs. To get the short ref:
+- `rename-workspace` returns it: `OK workspace:27`
+- `new-split` includes it in output: `OK surface:83 workspace:27`
+- `list-workspaces` shows all short refs
+
+Always save the short `workspace:N` ref after your first command that returns it, and use that
+for all subsequent commands.
+
+### Terminal initialization requirement
+
+Terminal surfaces are **not initialized** until the workspace is displayed at least once.
+This means:
+- `send` and `send-key` work on uninitialized surfaces (input is queued).
+- `read-screen` **fails** on uninitialized surfaces with "Terminal surface not found".
+- `select-workspace` triggers initialization for all surfaces currently in the workspace.
+- Surfaces created by `new-split` **after** a `select-workspace` also need re-initialization
+  (another `select-workspace`).
+
+**Important:** `select-workspace` switches the user's visible view. Always switch back to
+the leader workspace immediately after initializing:
+```bash
+cmux select-workspace --workspace <team-workspace-ref>
+cmux select-workspace --workspace $CMUX_WORKSPACE_ID
+```
+
+### Step-by-step spawn procedure
+
 1. **Rename your own workspace** so the human can identify you in the cmux tab list:
    ```bash
    cmux rename-workspace --workspace $CMUX_WORKSPACE_ID "<goal> (lead)"
    ```
-   Then **create a dedicated cmux workspace** for the workers:
+
+2. **Create a dedicated cmux workspace** for the workers and get its short ref:
    ```bash
    cmux new-workspace
-   cmux rename-workspace --workspace <id> "<goal> (team)"
+   # Output: OK 3B2BD4FD-A6B4-...  (UUID — don't use for send/read-screen)
+   cmux rename-workspace --workspace 3B2BD4FD-A6B4-... "<goal> (team)"
+   # Output: OK workspace:27  ← save this short ref, use it everywhere
    ```
    Keep names short — they get truncated in tabs. Use 2-4 word summaries for the goal.
    Examples: `"Refactor (lead)"` / `"Refactor (team)"`, `"a11y (lead)"` / `"a11y (team)"`.
-   This way they sort together and the relationship is obvious at a glance.
 
-2. **Create split panes** for each worker. For N workers, create a grid:
-   - 2 workers: one `new-split right`
-   - 3-4 workers: `new-split right`, then `new-split down` on each side
-   - 5-8 workers: extend the grid — `new-split right`, `new-split down` on each column, then
-     `new-split down` again on larger columns as needed
-
-   Use `cmux list-panes --workspace <ref>` to get pane/surface IDs after creating splits.
-
-3. **Launch Claude Code** in each pane:
+3. **Get Worker A's surface from the initial pane.** The new workspace already has one pane:
    ```bash
-   cmux send --workspace <ref> --surface <surface-ref> "claude --dangerously-skip-permissions"
-   cmux send-key --workspace <ref> --surface <surface-ref> Enter
-   ```
-   Wait ~8 seconds for Claude to boot before sending the task.
+   cmux list-panes --workspace workspace:27
+   # Output: * pane:80  [1 surface]  [focused]
 
-4. **Dispatch tasks** to each worker:
-   ```bash
-   cmux send --workspace <ref> --surface <surface-ref> "Read <absolute-path>/work/worker-<id>/TASK.md and execute it. You are Worker <ID>. Follow the status protocol exactly."
-   cmux send-key --workspace <ref> --surface <surface-ref> Enter
+   cmux list-pane-surfaces --workspace workspace:27 --pane pane:80
+   # Output: * surface:82  ~/path  [selected]  ← save surface:82 for Worker A
    ```
 
-5. **Record the pane mapping** — keep track of which surface ID belongs to which worker. You'll need this
-   for the monitoring phase.
+4. **Create additional panes** for the remaining workers. For N workers, you need N-1 splits
+   (since the workspace already has 1 pane). **Capture the surface ref from each `new-split` output:**
+   ```bash
+   cmux new-split right --workspace workspace:27
+   # Output: OK surface:83 workspace:27  ← save surface:83 for Worker B
 
-6. **Write the state file.** Save the full orchestration state to `tasks/supreme-leader-state.json`
+   cmux new-split down --workspace workspace:27 --pane pane:80
+   # Output: OK surface:84 workspace:27  ← save surface:84 for Worker C
+   ```
+
+   Layout patterns:
+   - 2 workers: one `new-split right` (1 initial + 1 split = 2 surfaces)
+   - 3 workers: `new-split right`, then `new-split down` on original pane
+   - 4 workers: `new-split right`, then `new-split down` on each pane (2x2 grid)
+   - 5+ workers: extend the grid as needed
+
+5. **Initialize terminal surfaces.** Select the team workspace to render all terminals,
+   then immediately switch back so the user's view isn't disrupted:
+   ```bash
+   cmux select-workspace --workspace workspace:27
+   cmux select-workspace --workspace $CMUX_WORKSPACE_ID
+   ```
+   After this, `read-screen` will work on all surfaces in the team workspace.
+   If you add more splits later (e.g., for dependent workers), repeat this step.
+
+6. **Launch Claude Code** in each surface:
+   ```bash
+   cmux send --workspace workspace:27 --surface surface:82 "claude --dangerously-skip-permissions"
+   cmux send-key --workspace workspace:27 --surface surface:82 Enter
+   ```
+   Wait ~8 seconds for Claude to boot, then verify it's ready:
+   ```bash
+   cmux read-screen --workspace workspace:27 --surface surface:82 --lines 5
+   ```
+   Look for Claude's prompt character (`❯`). If not visible, wait a few more seconds and check again.
+
+7. **Dispatch tasks** to each worker:
+   ```bash
+   cmux send --workspace workspace:27 --surface surface:82 "Read <absolute-path>/work/worker-a/TASK.md and execute it. You are Worker A. Follow the status protocol exactly."
+   cmux send-key --workspace workspace:27 --surface surface:82 Enter
+   ```
+
+8. **Write the state file.** Save the full orchestration state to `tasks/supreme-leader-state.json`
    so you can recover from crashes. This file is your brain on disk:
    ```json
    {
-     "workspace_ref": "workspace:9",
+     "workspace_ref": "workspace:27",
      "workers": {
-       "a": {"surface": "surface:35", "task": "YCore accessibility", "status": "working"},
-       "b": {"surface": "surface:36", "task": "YSpot accessibility", "status": "verified"}
+       "a": {"surface": "surface:82", "task": "YCore accessibility", "status": "working"},
+       "b": {"surface": "surface:83", "task": "YSpot accessibility", "status": "working"}
      },
      "dependencies": {"c": ["a", "b"]},
      "loop_interval": "1m",
@@ -273,16 +412,20 @@ Commands you'll use regularly:
 
 | Command | Purpose |
 |---|---|
-| `cmux new-workspace` | Create worker workspace |
-| `cmux rename-workspace --workspace <ref> "Name"` | Name it |
-| `cmux new-split <direction> --workspace <ref>` | Add panes |
-| `cmux list-panes --workspace <ref>` | Get pane/surface IDs |
-| `cmux send --workspace <ref> --surface <ref> "text"` | Type into a pane |
-| `cmux send-key --workspace <ref> --surface <ref> Enter` | Press Enter |
-| `cmux read-screen --workspace <ref> --surface <ref> --lines N` | Read a pane's output |
+| `cmux new-workspace` | Create worker workspace (returns UUID) |
+| `cmux rename-workspace --workspace <ref> "Name"` | Name it (returns short `workspace:N` ref) |
+| `cmux new-split <direction> --workspace <ref>` | Add pane (returns `surface:N workspace:M`) |
+| `cmux list-panes --workspace <ref>` | List panes (**not** surfaces — returns pane refs only) |
+| `cmux list-pane-surfaces --workspace <ref> --pane <pane-ref>` | Get the surface ref inside a pane |
+| `cmux select-workspace --workspace <ref>` | Display workspace (initializes terminal surfaces) |
+| `cmux send --workspace <ref> --surface <ref> "text"` | Type into a terminal surface |
+| `cmux send-key --workspace <ref> --surface <ref> Enter` | Press Enter in a terminal surface |
+| `cmux read-screen --workspace <ref> --surface <ref> --lines N` | Read terminal output (requires initialized surface) |
+| `cmux surface-health --workspace <ref>` | Check all surfaces in a workspace |
 
-All commands use `--workspace` and `--surface` refs so you can reach into the workers workspace from
-your own workspace without switching.
+All commands accept `--workspace` and `--surface` refs, so the leader can reach into the team
+workspace from its own workspace without switching. Always use short refs (`workspace:N`,
+`surface:N`), not UUIDs, for `read-screen` and `send`.
 
 ## Worker Context Inheritance
 

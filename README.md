@@ -16,6 +16,34 @@ The supreme leader never writes code itself — it delegates, reviews, and coord
 - [Claude Code](https://claude.ai/claude-code) v2.1.71+
 - [cmux](https://www.cmux.dev/) — native macOS terminal for running multiple AI agents in parallel
 
+### cmux Permissions (optional)
+
+If you're **not** running in bypass mode (`--dangerously-skip-permissions`), add these to your project's `.claude/settings.local.json` to auto-approve safe read-only cmux commands:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmux --version)",
+      "Bash(cmux ping)",
+      "Bash(cmux list-workspaces)",
+      "Bash(cmux list-panes *)",
+      "Bash(cmux list-pane-surfaces *)",
+      "Bash(cmux read-screen *)",
+      "Bash(cmux surface-health *)",
+      "Bash(cmux new-workspace)",
+      "Bash(cmux new-split *)",
+      "Bash(cmux rename-workspace *)",
+      "Bash(cmux select-workspace *)"
+    ]
+  }
+}
+```
+
+Dangerous commands (`cmux send`, `cmux send-key`, `cmux close-workspace`) intentionally require manual approval — they can execute arbitrary text in worker terminals.
+
+For fully autonomous orchestration: use `Bash(cmux *)` instead (less safe, but no prompts).
+
 ## Install
 
 Clone into your Claude Code skills directory:
