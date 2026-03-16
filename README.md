@@ -4,7 +4,7 @@ A [Claude Code](https://claude.ai/claude-code) skill that orchestrates a team of
 
 ## How it works
 
-1. **Plan** — Breaks your goal into independent subtasks, detects file conflicts, balances workloads
+1. **Plan** — Distributes work across independent subtasks, preserves user-provided lists verbatim, detects file conflicts
 2. **Spawn** — Creates cmux panes, launches Claude Code instances, dispatches tasks
 3. **Monitor** — Uses `/loop` to autonomously poll worker status, review completed work, unblock stuck workers
 4. **Complete** — Writes a final report, cleans up worker sessions
@@ -100,7 +100,7 @@ When the skill runs, it creates this structure in your project directory:
 
 ### Phases
 
-**Phase 1: PLAN** — Decomposes the goal into independent subtasks. Detects file conflicts (no two workers may edit the same file — hard rule). Balances workloads (no worker >3x the median). Maps dependencies between tasks. Writes TASK.md files from a template, injecting relevant project conventions from CLAUDE.md. Presents the plan for human approval before proceeding.
+**Phase 1: PLAN** — Distributes work across independent subtasks. If the user provides a specific list of items, every item is preserved verbatim — no additions, removals, merges, or substitutions. Worker count scales with list length (ceil(N/2-3) workers for N items). Detects file conflicts (no two workers may edit the same file — hard rule). Writes TASK.md files from a template, injecting relevant project conventions from CLAUDE.md. Validates item count matches before proceeding. Presents the plan for human approval.
 
 **Phase 2: SPAWN** — Renames the leader's cmux workspace (e.g., `"Refactor (lead)"`), creates a separate team workspace (`"Refactor (team)"`). Splits panes into a grid (supports 2-8 workers). Launches `claude --dangerously-skip-permissions` in each pane. Dispatches tasks via `cmux send`. Writes `supreme-leader-state.json` with the full worker-to-surface mapping.
 
