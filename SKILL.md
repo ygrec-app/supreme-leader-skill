@@ -84,23 +84,39 @@ approving manually.
 
 ## Phase 1: PLAN
 
-When the user gives you a goal:
+When the user gives you a goal, **deliver on all of it.** Partial delivery is a failure. If the
+scope feels large, use more workers — don't silently shrink the scope to fit fewer workers.
 
-1. **Analyze the goal** and break it into independent subtasks. Each subtask should be completable by a
-   single Claude Code session without needing real-time coordination with other workers. If the user
-   already provided an explicit task list, use that instead of decomposing.
+> **CRITICAL: Preserve user-provided lists verbatim.** If the user provides a specific list of items
+> (names, files, URLs, stores, etc.) in their goal or arguments, that list is **FIXED INPUT** — not a
+> suggestion. You must:
+> - Include **every item** from the user's list, exactly as written
+> - **Never add** items the user didn't specify
+> - **Never drop** items because you think they're less important
+> - **Never merge** items because you think they're related
+> - **Never substitute** items with alternatives you think are better
+> - Distribute the exact items across workers — your job is **allocation, not curation**
+
+1. **Distribute the work** across independent subtasks. If the user provided specific items to process,
+   distribute those **exact items** across workers — do not add, remove, merge, or substitute any items.
+   Your role is logistics (who does what), not editorial (what should be done). Each subtask should be
+   completable by a single Claude Code session without needing real-time coordination with other workers.
 
 2. **Identify dependencies.** If Task D requires the output of Task A (e.g., tests that import a module
    another worker is building), mark it as dependent. Dependent tasks get spawned only after their
    prerequisite is verified — not at the same time.
 
-3. **Decide worker count.** One worker per independent task. Don't create more workers than tasks. For
-   most projects, 3-5 workers is the sweet spot — more than that and the review overhead grows.
+3. **Decide worker count.**
+   - **If the user provided a list of N items:** You MUST assign ALL N items across workers. Calculate
+     workers as `ceil(N / items_per_worker)` where items_per_worker is 2-3. For example: 14 items →
+     7 workers of 2 each, or 5 workers of ~3 each. **Every single item must appear in exactly one
+     worker's TASK.md.** Count them. If your total doesn't equal N, you dropped items — fix it.
+   - **If no specific list:** 3-5 workers is the sweet spot for most projects.
 
 4. **Balance workloads.** If one subtask is significantly larger than others (e.g., 200+ files vs 20),
    split it into multiple workers. A good heuristic: no single worker should handle more than ~50 files
-   or ~3x the median workload. Unbalanced teams mean one worker becomes the bottleneck while others
-   idle — just like in real life. Redistribute proactively during planning, not after the fact.
+   or ~3x the median workload. **Important:** Balancing means distributing the user's exact items
+   evenly — it does NOT mean replacing, merging, or adding items to achieve "better" balance.
 
 5. **Detect file conflicts.** Before finalizing the plan, check whether any two workers would modify
    the same file. Two workers editing the same file will cause one to silently overwrite the other's
@@ -133,6 +149,8 @@ When the user gives you a goal:
    - File/scope assignments per worker (and confirmation that no files overlap)
    - The dependency graph (if any)
    - Estimated workload per worker (file count or rough scope)
+   - **If the user provided a specific list of N items:** Count how many items are assigned across
+     all workers. If the total doesn't equal N, you dropped items — fix it before proceeding.
 
    Wait for the human to confirm. They may want to adjust the split, add/remove workers, or
    change dependencies. Only proceed to Phase 2 after explicit approval (e.g., "go", "looks good",
