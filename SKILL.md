@@ -237,21 +237,82 @@ cmux select-workspace --workspace $CMUX_WORKSPACE_ID
    # Output: * surface:82  ~/path  [selected]  ← save surface:82 for Worker A
    ```
 
-4. **Create additional panes** for the remaining workers. For N workers, you need N-1 splits
-   (since the workspace already has 1 pane). **Capture the surface ref from each `new-split` output:**
-   ```bash
-   cmux new-split right --workspace workspace:27
-   # Output: OK surface:83 workspace:27  ← save surface:83 for Worker B
+4. **Create additional panes** for the remaining workers using the grid layout algorithm below.
+   **Capture the surface ref from each `new-split` output** — you'll need these to `send` and
+   `read-screen` later.
 
-   cmux new-split down --workspace workspace:27 --pane pane:80
-   # Output: OK surface:84 workspace:27  ← save surface:84 for Worker C
+   **Layout algorithm (works for any N workers):**
+
+   Build a cols × rows grid so every pane gets usable screen space. The approach is
+   **columns first, then split columns into rows**.
+
+   > **CRITICAL: Always use `--surface` (not `--pane`) with `new-split`.** Using `--pane` creates
+   > flat sibling splits. Using `--surface` creates proper nested splits within the target
+   > surface's area. This is the difference between a usable grid and an unusable stack of slivers.
+
+   1. **Calculate grid dimensions:**
+      - `cols = ceil(sqrt(N))`
+      - `rows = ceil(N / cols)`
+      - Some columns may have fewer rows than others. Distribute workers left-to-right,
+        top-to-bottom.
+      - Example: 5 workers → cols=3, rows=2, layout: 2-2-1 (cols 1&2 have 2 rows, col 3 has 1).
+        7 workers → cols=3, rows=3, layout: 3-3-1. 10 workers → cols=4, rows=3, layout: 3-3-3-1.
+
+   2. **Create columns first.** Starting from the initial surface (surface:A for Worker A),
+      split right `(cols - 1)` times. Each split targets the **last created surface**:
+      ```bash
+      # Initial surface is col 1 (e.g., surface:82 from list-pane-surfaces)
+      cmux new-split right --workspace workspace:27 --surface surface:82
+      # Output: OK surface:83 workspace:27  ← col 2 top (Worker B or C depending on layout)
+      cmux new-split right --workspace workspace:27 --surface surface:83
+      # Output: OK surface:84 workspace:27  ← col 3 top
+      ```
+      You now have N columns, each full height. Save these surface refs — they are the
+      "column top" surfaces.
+
+   3. **Split columns into rows.** For each column that needs multiple rows, split its
+      surface down. Target the **column's surface** (not a pane ref):
+      ```bash
+      # Col 1 (surface:82) needs 2 rows → split down once
+      cmux new-split down --workspace workspace:27 --surface surface:82
+      # Output: OK surface:85 workspace:27  ← col 1 row 2
+
+      # Col 2 (surface:83) needs 2 rows → split down once
+      cmux new-split down --workspace workspace:27 --surface surface:83
+      # Output: OK surface:86 workspace:27  ← col 2 row 2
+
+      # Col 3 (surface:84) has only 1 row → no split needed
+      ```
+      For columns with 3 rows, split the surface down twice (targeting the original column
+      surface each time — cmux will subdivide it further).
+
+   4. **Assign surfaces to workers** left-to-right, top-to-bottom:
+      - Col 1 top = Worker A, Col 1 bottom = Worker D
+      - Col 2 top = Worker B, Col 2 bottom = Worker E
+      - Col 3 top = Worker C (full height)
+
+   **Result for 5 workers:**
+   ```
+   ┌──────────┬──────────┬──────────┐
+   │ Worker A │ Worker B │          │
+   ├──────────┼──────────┤ Worker C │
+   │ Worker D │ Worker E │          │
+   └──────────┴──────────┴──────────┘
    ```
 
-   Layout patterns:
-   - 2 workers: one `new-split right` (1 initial + 1 split = 2 surfaces)
-   - 3 workers: `new-split right`, then `new-split down` on original pane
-   - 4 workers: `new-split right`, then `new-split down` on each pane (2x2 grid)
-   - 5+ workers: extend the grid as needed
+   Quick reference for common counts:
+   | Workers | Cols×Rows | Column layout (rows per column) |
+   |---------|-----------|-------------------------------|
+   | 2 | 2×1 | 1, 1 |
+   | 3 | 2×2 | 2, 1 |
+   | 4 | 2×2 | 2, 2 |
+   | 5 | 3×2 | 2, 2, 1 |
+   | 6 | 3×2 | 2, 2, 2 |
+   | 7 | 3×3 | 3, 3, 1 |
+   | 8 | 3×3 | 3, 3, 2 |
+   | 9 | 3×3 | 3, 3, 3 |
+   | 10 | 4×3 | 3, 3, 3, 1 |
+   | 12 | 4×3 | 3, 3, 3, 3 |
 
 5. **Initialize terminal surfaces.** Select the team workspace to render all terminals,
    then immediately switch back so the user's view isn't disrupted:
