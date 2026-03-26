@@ -34,7 +34,12 @@ If you're **not** running in bypass mode (`--dangerously-skip-permissions`), add
       "Bash(cmux new-workspace)",
       "Bash(cmux new-split *)",
       "Bash(cmux rename-workspace *)",
-      "Bash(cmux select-workspace *)"
+      "Bash(cmux select-workspace *)",
+      "Bash(cmux set-progress *)",
+      "Bash(cmux clear-progress)",
+      "Bash(cmux set-status *)",
+      "Bash(cmux clear-status *)",
+      "Bash(cmux log *)"
     ]
   }
 }
@@ -113,10 +118,11 @@ When the skill runs, it creates this structure in your project directory:
 | `blocked` | Read the question, write a response, notify worker via cmux |
 | `needs-fix` | Re-check. Escalate to human after 3 rejections |
 | `verified` | No action needed |
+| `quota-exhausted` | Alert human, log to sidebar, wait for reset |
 
-Dependent workers are spawned only when their prerequisites reach `verified`. Stuck workers (no status change for 3+ iterations) trigger a human alert.
+Dependent workers are spawned only when their prerequisites reach `verified`. Stuck workers (no status change for 3+ iterations) trigger a human alert. Real-time progress is pushed to the cmux sidebar via `set-progress`, `set-status`, and `log`.
 
-**Phase 4: COMPLETE** — Writes `FINAL_REPORT.md`, cancels the `/loop` cron job, sends `/exit` to all worker panes, closes the team workspace.
+**Phase 4: COMPLETE** — Updates `supreme-leader-state.json` with final statuses, writes `FINAL_REPORT.md`, cancels the `/loop` cron job, sends `/exit` to all worker panes, clears sidebar state. The team workspace is left open for inspection.
 
 ### Communication Protocol
 
@@ -128,6 +134,8 @@ Workers and the leader communicate exclusively through files — no direct messa
                  needs-fix → done → verified
 
 working → blocked → (response) → working → done
+
+working → quota-exhausted → (reset) → working → done
 ```
 
 ### Crash Recovery

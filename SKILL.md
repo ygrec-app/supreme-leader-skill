@@ -59,7 +59,12 @@ to version control. These are read-only and structural commands that can't cause
     "Bash(cmux new-workspace)",
     "Bash(cmux new-split *)",
     "Bash(cmux rename-workspace *)",
-    "Bash(cmux select-workspace *)"
+    "Bash(cmux select-workspace *)",
+    "Bash(cmux set-progress *)",
+    "Bash(cmux clear-progress)",
+    "Bash(cmux set-status *)",
+    "Bash(cmux clear-status *)",
+    "Bash(cmux log *)"
   ]
 }
 ```
@@ -156,6 +161,54 @@ scope feels large, use more workers — don't silently shrink the scope to fit f
    change dependencies. Only proceed to Phase 2 after explicit approval (e.g., "go", "looks good",
    "approved"). If the user originally said to work autonomously or skip approval, you may proceed
    without waiting — but default to asking.
+
+## cmux Sidebar Integration
+
+Use cmux's sidebar features to give the user real-time visibility without opening files.
+
+### Progress bar
+
+Update the leader workspace's progress bar after each monitoring iteration:
+
+```bash
+# Calculate progress as fraction of verified workers
+# e.g., 3 out of 5 workers verified = 0.6
+cmux set-progress 0.6 --label "3/5 workers verified"
+```
+
+Set to `1.0` when all workers are verified. Clear it after Phase 4:
+```bash
+cmux clear-progress
+```
+
+### Status keys
+
+Set status keys on the **leader workspace** to show worker states at a glance:
+
+```bash
+cmux set-status "workers" "2 working, 1 done, 1 verified" --icon "person.2" --color "#7B8AFF"
+cmux set-status "iteration" "5" --icon "arrow.clockwise" --color "#CCD9E6"
+```
+
+Update these every loop iteration. Clear them in Phase 4:
+```bash
+cmux clear-status "workers"
+cmux clear-status "iteration"
+```
+
+### Log entries
+
+Use `cmux log` to push notable events to the sidebar log so the user sees them without
+switching workspaces:
+
+```bash
+cmux log --level info --source "supreme-leader" -- "Worker B marked done — reviewing"
+cmux log --level warning --source "supreme-leader" -- "Worker A hit quota limit, waiting for reset"
+cmux log --level info --source "supreme-leader" -- "All workers verified — writing final report"
+```
+
+Keep logs concise (under 80 chars). Only log transitions and notable events — not every
+"still working" check.
 
 ## Phase 2: SPAWN
 
@@ -404,7 +457,17 @@ Default interval is `1m`. The monitoring prompt should instruct you to:
    | `"blocked"` | Read the `"question"` field from the status JSON. Write your answer to `work/worker-<id>/team-lead-response.txt`. Notify the worker via `cmux send` that you've responded. |
    | `"verified"` | No action needed. |
 
-4. **Check for completion:** If ALL workers are `"verified"`, proceed to Phase 4.
+4. **Update the sidebar.** After processing all workers, push the current state to the cmux sidebar:
+   ```bash
+   # Progress bar: fraction of verified workers
+   cmux set-progress <verified/total> --label "<verified>/<total> workers verified"
+   # Status summary
+   cmux set-status "workers" "<N> working, <N> done, <N> verified" --icon "person.2" --color "#7B8AFF"
+   cmux set-status "iteration" "<N>" --icon "arrow.clockwise" --color "#CCD9E6"
+   ```
+   Log notable transitions (worker done, needs-fix, blocked, quota-exhausted) via `cmux log`.
+
+5. **Check for completion:** If ALL workers are `"verified"`, proceed to Phase 4.
 
 5. **Check for stuck workers:** If a worker's status hasn't changed for 3+ consecutive iterations AND
    `cmux read-screen` shows they're idle (no active Claude session), alert the human.
@@ -436,21 +499,31 @@ When all workers are verified:
 
 2. **Stop the loop** by calling `CronList` to find the job ID, then `CronDelete` to cancel it.
 
-3. **Clean up worker sessions.** Send `/exit` to each worker pane via `cmux send` so they don't
-   linger as orphan terminals. Then close the Workers workspace:
+3. **Update the state file.** Before anything else, update `tasks/supreme-leader-state.json`
+   with all workers set to `"verified"` and the final iteration count. This ensures the state
+   file is consistent with reality — even if the leader crashes during cleanup, the state file
+   reflects completion.
+
+4. **Clean up worker sessions.** Send `/exit` to each worker pane via `cmux send` so they don't
+   linger as orphan Claude sessions burning memory:
    ```bash
    # For each worker surface:
    cmux send --workspace <workers-ref> --surface <surface-ref> "/exit"
    cmux send-key --workspace <workers-ref> --surface <surface-ref> Enter
    ```
-   Wait a few seconds for all workers to exit, then close the workspace:
-   ```bash
-   cmux close-workspace --workspace <workers-ref>
-   ```
-   If `close-workspace` isn't available, just leave them — the `/exit` commands are enough.
-   The point is not to leave 8 idle Claude sessions burning memory.
+   **Do NOT close the team workspace.** Leave it open so the user can inspect worker terminals,
+   scroll through output, or re-launch a worker if they want to iterate further. The workspace
+   costs nothing once Claude sessions are exited.
 
-4. **Report to the human** with a concise summary of what was accomplished.
+5. **Clear sidebar state.** Clean up the progress bar and status keys:
+   ```bash
+   cmux clear-progress
+   cmux clear-status "workers"
+   cmux clear-status "iteration"
+   cmux log --level info --source "supreme-leader" -- "Orchestration complete — all workers verified"
+   ```
+
+6. **Report to the human** with a concise summary of what was accomplished.
 
 ## Status Protocol
 
@@ -474,6 +547,7 @@ Workers communicate via JSON status files. The status file format:
 - `blocked` — has a question, waiting for supreme leader
 - `needs-fix` — supreme leader rejected the work (set by supreme leader)
 - `verified` — supreme leader approved the work (set by supreme leader)
+- `quota-exhausted` — worker hit usage limit, waiting for reset (set by supreme leader)
 
 ### Transition Diagram
 
@@ -483,6 +557,8 @@ Workers communicate via JSON status files. The status file format:
                   needs-fix → done → verified ✓
 
 working → blocked → (response) → working → done
+
+working → quota-exhausted → (reset) → working → done
 ```
 
 ## cmux Command Reference
@@ -501,6 +577,11 @@ Commands you'll use regularly:
 | `cmux send-key --workspace <ref> --surface <ref> Enter` | Press Enter in a terminal surface |
 | `cmux read-screen --workspace <ref> --surface <ref> --lines N` | Read terminal output (requires initialized surface) |
 | `cmux surface-health --workspace <ref>` | Check all surfaces in a workspace |
+| `cmux set-progress <0.0-1.0> --label "text"` | Update sidebar progress bar |
+| `cmux clear-progress` | Clear sidebar progress bar |
+| `cmux set-status <key> <value> --icon <name>` | Set sidebar status key |
+| `cmux clear-status <key>` | Clear a sidebar status key |
+| `cmux log --level <level> --source <name> -- "msg"` | Push event to sidebar log |
 
 All commands accept `--workspace` and `--surface` refs, so the leader can reach into the team
 workspace from its own workspace without switching. Always use short refs (`workspace:N`,
@@ -642,6 +723,28 @@ worker going silent for multiple iterations):
 4. **Don't ask the human** unless the limit persists for more than 30 minutes. The supreme leader
    should handle this like a manager handles a team member being out for lunch — wait, then
    re-engage when they're back.
+
+### Usage quota exhausted
+A worker may hit a hard usage cap (different from a rate limit). Detected via `read-screen`
+showing messages like "You're out of extra usage", "resets at <time>", or "usage limit reached".
+This is a **hard stop** — the worker cannot continue until the quota resets, unlike a rate limit
+which resolves after a short cooldown.
+
+1. **Detect it.** On each loop iteration, if a worker's status hasn't progressed and
+   `read-screen` contains "out of extra usage" or "usage limit", mark that worker as
+   `"quota-exhausted"` in the state file.
+2. **Log it.** Push a warning to the sidebar:
+   ```bash
+   cmux log --level warning --source "supreme-leader" -- "Worker A quota exhausted — resets at 7pm"
+   ```
+3. **Extract the reset time** from the screen text (e.g., "resets 7pm (Europe/Paris)") and
+   note it in the state file.
+4. **Alert the human immediately.** Unlike rate limits, quota exhaustion can block a worker for
+   hours. Tell the user which worker is affected, what time it resets, and what work remains.
+   The user may want to manually resume later or reassign the remaining work to another worker.
+5. **On subsequent iterations,** skip the exhausted worker — don't try to re-dispatch or send
+   prompts. Just check `read-screen` each iteration to see if the quota has reset (Claude prompt
+   reappears). When it does, re-dispatch with resume instructions.
 
 ### Worker produces no status file
 After 3 iterations with no file, check `read-screen`. The worker may have crashed or ignored
